@@ -1,14 +1,16 @@
+'use strict'
+
 const fp = require('fastify-plugin')
 
 const { ensureConfigFile, ejectBlueprint } = require('./setup')
 const { configure, resolveBuildCommands, viteESModuleSSR } = require('./config')
-const { setup: setupProduction } = require('./mode/production')
-const { setup: setupDevelopment } = require('./mode/development')
+
+const setupProduction = require('./mode/production')
+const setupDevelopment = require('./mode/development')
+
+const kOptions = Symbol('kOptions')
 
 class Vite {
-  scope = null
-  setupMode = null
-  options = null
   constructor (scope, options) {
     // Hold reference to Fastify encapsulation context
     this.scope = scope
@@ -18,35 +20,21 @@ class Vite {
       ? setupDevelopment
       // Assumes presence of and uses production bundled distribution
       : setupProduction
-    // Hold reference to user-provided plugin options
-    this.options = options
+    // Private reference to user-provided plugin options
+    this[kOptions] = options
   }
 
   async ready () {
     // Process all user-provided options and compute all Vite configuration settings
-    this.config = await configure(this.options)
+    this.config = await configure(this[kOptions])
     // Get handler function and routes based on the Vite server bundle
-    const { handler, routes } = await this.setupMode(this.config)
-    // Use createRouteFunction() from main config or for renderer if set
-    const createRouteFunction = (
-      this.config.createRouteFunction ?? this.config.renderer.createRouteFunction
-    )
-    // Create instance.vite.route() method
-    this.route = createRouteFunction(this.scope, handler)
-    // Automatically create routes exported by the Vite server entry point
-    for (const route of routes) {
-      this.route(route.path, route)
+    const { routes, handler, errorHandler } = await this.setupMode(this.config)
+    // Register individual Fastify routes for each the client-provided routes
+    if (routes && typeof routes[Symbol.iterator] === 'function') {
+      for (const route of routes) {
+        this.config.createRoute(this.scope, { handler, errorHandler, route })
+      }
     }
-  }
-
-  // Shortcut to create GET routes, can only be called after instance.vite.ready()
-  get (url, routeOptions) {
-    return this.route(url, { method: 'GET', ...routeOptions })
-  }
-
-  // Shortcut to create POST routes, can only be called after instance.vite.ready()
-  post (url, { data, method, ...routeOptions } = {}) {
-    return this.route(url, { data, method: 'POST', ...routeOptions })
   }
 }
 

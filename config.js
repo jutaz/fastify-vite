@@ -1,72 +1,95 @@
 const { resolveConfig } = require('vite')
 const { join, resolve, exists, read } = require('./ioutils')
-const { compile } = require('tempura')
+const { createHtmlTemplateFunction: _createHtmlTemplateFunction } = require('./html')
 
 class Config {
   // Whether or not to enable Vite's Dev Server
   dev = false
+
   // Vite's configuration file location
   configRoot = null
+
   // Vite's resolved config
   vite = null
+
   // Vite's config path
   viteConfig = null
-  // Vite's distribution bundle info
+
+  // Vite's distribution bundle info,
+  // automatically computed from Vite's default settings
   bundle = {
     manifest: null,
     indexHtml: null,
     dir: null,
   }
 
-  // The renderer adapter to use
+  // Single object that can override all rendering settings that follow
   renderer = {}
-  // Can override all rendering settings bellow
-  //
+
   // Function to create SSR render function from server bundle
   createRenderFunction = null
-  // Vite entry points for server and client bundles
-  serverEntryPoint = '/entry/server.js'
-  clientEntryPoint = '/entry/client.js'
-  setupClient (client) {
 
-  },
-  // Compile index.html into a templating function
-  createHtmlFunction (source) {
-    // Use tempura by default
-    // https://github.com/lukeed/tempura
-    const template = compile(source)
-    return ctx => template(ctx)
+  // Module bridging client code to the server,
+  // also referred to as the server entry point
+  clientModule = null
+
+  async prepareClient ({ routes, render }, scope, config) {
+    if (typeof routes === 'function') {
+      routes = await routes()
+    }
+    return { routes, render }
   }
 
-  // Function to create the instance.vite.route() method
-  createRouteFunction (scope) {
-    return (url, routeOptions = {}) => {
-      scope.route({ url, handler: scope.vite.handler, method: 'GET', ...routeOptions })
+  // Compile index.html into templating function, 
+  // used by createHtmlFunction() by default
+  createHtmlTemplateFunction = _createHtmlTemplateFunction
+
+  // Create reply.html() response function
+  createHtmlFunction (source, scope, config) {
+    const indexHtmlTemplate = createHtmlTemplateFunction(source)
+    return function (ctx) {
+      this.send(indexHtmlTemplate(ctx))
     }
   }
 
-  // Function to create instance.vite.handler() method (route handler)
-  createHandler (scope, options) {
+  // Function to register server routes for client routes
+  createRoute ({ handler, errorHandler, route }, scope, config) {
+    scope.route({
+      url: route.path,
+      method: 'GET',
+      handler,
+      errorHandler,
+      ...route,
+    })
+  }
+
+  // Function to create the route handler passed to createRoute
+  createRouteHandler (scope, options) {
     return async function (req, reply) {
-      const url = req.raw.url
-      const indexHtmlContext = await reply.renderApp(scope, req, reply, url, options)
-      indexHtmlContext.fastify = scope
-      indexHtmlContext.req = req
-      indexHtmlContext.reply = reply
-      reply.type('text/html')
-      reply.send(reply.renderIndexHtml(indexHtmlContext))
+      const fragments = await reply.render()
+      reply.html(fragments)
+    }
+  }
+
+  // Function to create the route errorHandler passed to createRoute
+  createErrorHandler (scope) {
+    return (error, req, reply) => {
+      scope.vite.devServer.ssrFixStacktrace(error)
+      scope.errorHandler(error, req, reply)
     }
   }
 }
 
 async function configure (options = {}) {
   const [vite, viteConfig] = await resolveViteConfig(options.configRoot)
+  const clientModule = resolveClientModule(vite.root)
   const bundle = await resolveBundle({ ...options, vite })
   const config = Object.assign(new Config(), {
     ...options,
     vite,
     viteConfig,
     bundle,
+    clientModule,
   })
   for (const setting of [
     'compileIndexHtml',
@@ -78,6 +101,17 @@ async function configure (options = {}) {
     config[setting] = config.renderer[setting] ?? config[setting]
   }
   return config
+}
+
+function resolveClientModule (root) {
+  for (const ext of ['js', 'mjs', 'ts', 'cjs']) {
+    const indexFile = join(root, `index.${ext}`)
+    console.log('indexFile', indexFile)
+    if (exists(indexFile)) {
+      return `/index.${ext}`
+    }
+  }
+  return null
 }
 
 async function resolveViteConfig (configRoot) {

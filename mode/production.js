@@ -2,12 +2,12 @@ const { resolve } = require('path')
 const { exists } = require('../ioutils')
 const FastifyStatic = require('@fastify/static')
 
-async function setup (options) {
+async function setup (config) {
   // For production you get the distribution version of the render function
-  const { assetsDir } = options.vite.build
+  const { assetsDir } = config.vite.build
 
-  const clientDist = resolve(options.bundle.dir, 'client')
-  const serverDist = resolve(options.bundle.dir, 'server')
+  const clientDist = resolve(config.bundle.dir, 'client')
+  const serverDist = resolve(config.bundle.dir, 'server')
   if (!exists(clientDist) || !exists(serverDist)) {
     throw new Error('No distribution bundle found.')
   }
@@ -21,29 +21,35 @@ async function setup (options) {
   // production deployment, you'll want to capture those paths in
   // Nginx or just serve them from a CDN instead
 
-  const serverEntryPoint = await loadServerEntry(options)
-  // Create vite.render, vite.routes and vite.handler references
-  Object.assign(this, , {
-    handler: options.createRouteHandler(this.scope, options),
-  })
-  
-  this.scope.decorateReply('render', render)
-  this.scope.decorateReply('html', await options.createHtmlFunction(options.bundle.indexHtml))
+  // Load routes from client module (server entry point)
+  const clientModule = await loadClient()
+  const client = await config.prepareClient(clientModule)
 
-  async function loadServerEntry (options, createRenderFunction) {
-    // Load production template source only once in prod
-    const serverBundle = await import(resolve(options.bundle.dir, 'server/server.js'))
-    let entry = serverBundle.default ?? serverBundle
-    if (typeof entry === 'function') {
-      entry = entry(createRenderFunction)
-    }
-    return {
-      routes: typeof entry.routes === 'function'
-        ? await entry.routes?.()
-        : entry.routes,
-      render: entry.render,
-    }
+  // Create route handler and route error handler functions
+  const handler = await config.createRouteHandler(this.scope, client, config)
+  const errorHandler = await config.createErrorHandler(this.scope, client, config)
+
+  // Set reply.html() function with production version of index.html
+  this.scope.decorateReply('html', await config.createHtmlFunction(
+    this.scope,
+    config.bundle.indexHtml,
+    config,
+  ))
+
+  // Set reply.render() function with the client module production bundle
+  this.scope.decorateReply('render', await config.createRenderFunction(
+    this.scope,
+    client,
+    config,
+  ))
+
+  return { routes: client.routes, handler, errorHandler }
+
+  // Loads the Vite application server entry point for the client
+  async function loadClient () {
+    const serverBundle = await import(resolve(config.bundle.dir, 'server/server.js'))
+    return serverBundle.default ?? serverBundle
   }
 }
 
-module.exports = { setup }
+module.exports = setup
