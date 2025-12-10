@@ -50,7 +50,7 @@
     "./server": "./server.js"
   },
   "dependencies": {
-    "@fastify/vite": "workspace:^",
+    "@fastify/vite": "workspace:*",
     "@unhead/react": "^2.0.8",
     "acorn": "^8.14.1",
     "acorn-strip-function": "^1.2.0",
